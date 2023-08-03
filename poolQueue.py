@@ -4,23 +4,65 @@ from multiprocessing import Queue, Pool, cpu_count, Event
 import queue
 import time 
 from threading import Thread
+from typing import Callable
+import sys
+import os 
 
 class PoolQueue:
 
 	@staticmethod
-	def returnQueueThreadWorker(returnQueue, shouldStop, returnData):
+	def returnQueueThreadWorker(returnQueue: Queue, shouldStop: Event, returnData: dict, progressQueue: queue.Queue):
 		
 		while not shouldStop.is_set():
 			try:
 				data, res = returnQueue.get(timeout = 0.1)
 				returnData[data] = res
+				progressQueue.put("job done")
 			except queue.Empty:
 				time.sleep(0.0001)
 				continue
 		
 		pass
+		
+	@staticmethod
+	def progressThreadWorker(progressQueue: queue.Queue, shouldStop: Event):
+		
+		jobsTotal = 0
+		jobsDone = 0
+		
+		while not shouldStop.is_set():
+			try:
+				data = progressQueue.get(timeout = 0.1)
+			except queue.Empty:
+				time.sleep(0.0001)
+				continue
+				
+			if data == "job done":
+				jobsDone += 1
+			elif data == "job added":
+				jobsTotal += 1
+			
+			empty = "\u2591"
+			full = "\u2588"
+			
+			width = os.get_terminal_size()[0]
+			width = int(width * 0.5)
+			
+			progress = jobsDone / jobsTotal
+			
+			fullBar = int(width * jobsDone / jobsTotal)
+			emptyBar = width - fullBar
+			
+			bar = "[" + full * fullBar + empty * emptyBar + "]"
+			
+			sys.stdout.write("Progress: {:s}  {:6.2f}% {:5d}/{:d}\r".format(bar, 100 * progress, jobsDone, jobsTotal))
+			sys.stdout.flush()
+		
+		sys.stdout.write("\n")
+		sys.stdout.flush()
+		pass
 
-	def __init__(self, targetFunction, cpuPercent = 0.5):
+	def __init__(self, targetFunction: Callable[[Queue, Queue, Event], None], cpuPercent = 0.5):
 	
 		cpuPercent = min(cpuPercent, 0.9)
 	
@@ -30,11 +72,17 @@ class PoolQueue:
 		self.jobQueue = Queue(maxsize = self.cpuCount * 5)
 		self.returnQueue = Queue(maxsize = self.cpuCount * 10)
 		
+		# not a multiprocessed queue on purpose.
+		self.progressQueue = queue.Queue()
+		
 		self.shouldStop = Event()
 		self.shouldStop.clear()
 		
 		self.returnQueueShouldStop = Event()
 		self.returnQueueShouldStop.clear()
+		
+		self.progressQueueShouldStop = Event()
+		self.progressQueueShouldStop.clear()
 		
 		self.p = None
 		
@@ -55,6 +103,8 @@ class PoolQueue:
 			return
 		
 		self.jobQueue.put(data)
+		
+		self.progressQueue.put("job added")
 
 	def start(self):
 		self.isRunning = True
@@ -62,8 +112,11 @@ class PoolQueue:
 		self.p = Pool(self.cpuCount, self.targetFunction, (self.jobQueue, self.returnQueue, self.shouldStop,))
 	
 		self.returnData = {}
-		self.returnQueueThread = Thread(target=self.returnQueueThreadWorker, args=(self.returnQueue, self.returnQueueShouldStop, self.returnData))
+		self.returnQueueThread = Thread(target=self.returnQueueThreadWorker, args=(self.returnQueue, self.returnQueueShouldStop, self.returnData, self.progressQueue))
 		self.returnQueueThread.start()
+		
+		self.progressQueueThread = Thread(target=self.progressThreadWorker, args=(self.progressQueue, self.progressQueueShouldStop))
+		self.progressQueueThread.start()
 		
 		print("pool started with " + str(self.cpuCount) + " cpus")
 	
@@ -89,8 +142,13 @@ class PoolQueue:
 			time.sleep(0.1)
 		
 		self.returnQueueShouldStop.set()
-		
 		self.returnQueueThread.join()
+		
+		while not self.progressQueue.empty():
+			time.sleep(0.01)
+		
+		self.progressQueueShouldStop.set()
+		self.progressQueueThread.join()
 		
 		self.isRunning = False
 		self.isJoining = False
@@ -98,4 +156,6 @@ class PoolQueue:
 		print("pool joined, returning data")
 		
 		return self.returnData
-	
+
+
+		
