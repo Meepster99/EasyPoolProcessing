@@ -45,7 +45,10 @@ class PoolQueue:
 			empty = "\u2591"
 			full = "\u2588"
 			
-			width = os.get_terminal_size()[0]
+			try:
+				width = os.get_terminal_size()[0]
+			except:
+				width = 100
 			width = int(width * 0.5)
 			
 			progress = jobsDone / jobsTotal
